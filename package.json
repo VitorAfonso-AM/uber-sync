@@ -1,17 +1,24 @@
 {
   "name": "uber-sync",
   "version": "1.0.0",
+  "description": "Sync Uber trips to Google Sheets",
+  "main": "dist/index.js",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts"
   },
   "dependencies": {
-    "csv-parse": "^5.5.0",
-    "dotenv": "^16.4.0",
-    "ssh2-sftp-client": "^9.0.4"
+    "dotenv": "^16.3.1",
+    "ssh2-sftp-client": "^10.0.3",
+    "csv-parse": "^5.5.3",
+    "node-cron": "^3.0.3"
   },
   "devDependencies": {
-    "@types/ssh2-sftp-client": "^9.0.6",
-    "typescript": "^5.3.3"
+    "@types/node": "^20.10.0",
+    "@types/ssh2-sftp-client": "^9.0.3",
+    "@types/node-cron": "^3.0.11",
+    "typescript": "^5.3.3",
+    "ts-node": "^10.9.2"
   }
 }

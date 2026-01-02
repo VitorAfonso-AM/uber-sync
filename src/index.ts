@@ -52,7 +52,7 @@ const COLUMNS = [
   'Duração (min)',
   'Endereço de partida',
   'Endereço de destino',
-  'Outras cobranças (moeda local)',
+  'Valor total: BRL',
   'Status de Verificação',
 ];
 

@@ -8,14 +8,17 @@ RUN apk add --no-cache tzdata
 # Copiar package files
 COPY package*.json ./
 
-# Instalar dependências
-RUN npm ci --only=production
+# Instalar TODAS as dependências (incluindo devDependencies para build)
+RUN npm ci
 
 # Copiar código fonte
 COPY . .
 
 # Compilar TypeScript
 RUN npm run build
+
+# Remover devDependencies depois do build
+RUN npm prune --production
 
 # Criar diretório para logs
 RUN mkdir -p /app/logs

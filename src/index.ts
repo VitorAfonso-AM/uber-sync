@@ -32,15 +32,13 @@ const SFTP_CONFIG = {
   remotePath: '/from_uber/trips',
 };
 
-const SHEETS_API_URL =
-  'https://sheetsapi-4glvqxtnkq-uc.a.run.app';
+const SHEETS_API_URL = 'https://sheetsapi-4glvqxtnkq-uc.a.run.app';
 
-const COLUMNS = [
+// Colunas originais necessárias para leitura
+const SOURCE_COLUMNS = [
   'ID da viagem/Uber Eats',
-  'Registro de data e hora da transação (UTC)',
-  'Data de chegada (UTC)',
-  'Hora de chegada (UTC)',
-  'Data de chegada (local)',
+  'Data da solicitação (local)',
+  'Hora da solicitação (local)',
   'Hora de chegada (local)',
   'Nome',
   'Sobrenome',
@@ -53,12 +51,31 @@ const COLUMNS = [
   'Endereço de partida',
   'Endereço de destino',
   'Valor total: BRL',
-  'Status de Verificação',
+];
+
+// Colunas finais para envio ao Sheets
+const OUTPUT_COLUMNS = [
+  'ID da viagem/Uber Eats',
+  'Data da solicitação (local)',
+  'Hora da solicitação (local)',
+  'Hora de chegada (local)',
+  'Nome Completo',
+  'Grupo',
+  'Serviço',
+  'Cidade',
+  'País',
+  'Distância (mi)',
+  'Duração (min)',
+  'Endereço de partida',
+  'Endereço de destino',
+  'Valor total: BRL',
 ];
 
 // Horário do cron (padrão: 8h da manhã, horário de Brasília)
-// Formato: minuto hora dia mês dia-da-semana
 const CRON_SCHEDULE = process.env.CRON_SCHEDULE || '0 8 * * *';
+
+// Grupos a serem excluídos
+const EXCLUDED_GROUPS = ['ADMINISTRATIVO', 'COMERCIAL'];
 
 // ================= FUNÇÕES =================
 
@@ -72,16 +89,33 @@ function getYesterdayFileName(): string {
 }
 
 function filterTrips(trips: Trip[]): Trip[] {
-  return trips.map((trip) => {
-    const filtered: Trip = {};
-    COLUMNS.forEach((col) => {
-      filtered[col] =
-        col === 'Status de Verificação'
-          ? 'Pendente'
-          : trip[col] || '';
+  return trips
+    .filter((trip) => {
+      const grupo = trip['Grupo']?.trim() || '';
+      return !EXCLUDED_GROUPS.includes(grupo);
+    })
+    .map((trip) => {
+      const nome = trip['Nome']?.trim() || '';
+      const sobrenome = trip['Sobrenome']?.trim() || '';
+      const nomeCompleto = `${nome} ${sobrenome}`.trim();
+
+      return {
+        'ID da viagem/Uber Eats': trip['ID da viagem/Uber Eats'] || '',
+        'Data da solicitação (local)': trip['Data da solicitação (local)'] || '',
+        'Hora da solicitação (local)': trip['Hora da solicitação (local)'] || '',
+        'Hora de chegada (local)': trip['Hora de chegada (local)'] || '',
+        'Nome Completo': nomeCompleto,
+        'Grupo': trip['Grupo'] || '',
+        'Serviço': trip['Serviço'] || '',
+        'Cidade': trip['Cidade'] || '',
+        'País': trip['País'] || '',
+        'Distância (mi)': trip['Distância (mi)'] || '',
+        'Duração (min)': trip['Duração (min)'] || '',
+        'Endereço de partida': trip['Endereço de partida'] || '',
+        'Endereço de destino': trip['Endereço de destino'] || '',
+        'Valor total: BRL': trip['Valor total: BRL'] || '',
+      };
     });
-    return filtered;
-  });
 }
 
 async function processCSVFile(
@@ -111,7 +145,7 @@ async function sendToGoogleSheets(trips: Trip[]) {
   if (!trips.length) return;
 
   const values = trips.map((t) =>
-    COLUMNS.map((c) => t[c] || '')
+    OUTPUT_COLUMNS.map((c) => t[c] || '')
   );
 
   const res = await fetch(SHEETS_API_URL, {
@@ -154,7 +188,7 @@ async function syncUberTrips() {
     const trips = await processCSVFile(sftp, file.name);
     const filtered = filterTrips(trips);
 
-    console.log(`[${timestamp}] 📊 ${filtered.length} viagens encontradas`);
+    console.log(`[${timestamp}] 📊 ${filtered.length} viagens encontradas (após filtros)`);
     await sendToGoogleSheets(filtered);
 
     console.log(`[${timestamp}] ✅ Sync concluído com sucesso`);
@@ -172,7 +206,8 @@ async function main() {
   console.log('🔧 Uber Sync Service iniciado');
   console.log(`⏰ Agendamento: ${CRON_SCHEDULE}`);
   console.log(`🌍 Timezone: ${process.env.TZ || 'UTC'}`);
-  
+  console.log(`🚫 Grupos excluídos: ${EXCLUDED_GROUPS.join(', ')}`);
+
   // Validar configuração
   if (!SFTP_CONFIG.username || !SFTP_CONFIG.privateKey) {
     console.error('❌ UBER_SFTP_USERNAME e UBER_SFTP_PRIVATE_KEY são obrigatórios');
@@ -201,7 +236,7 @@ async function main() {
   });
 
   console.log('✅ Cron job configurado. Aguardando próxima execução...');
-  
+
   // Manter o processo rodando
   process.on('SIGTERM', () => {
     console.log('👋 Recebido SIGTERM, encerrando...');

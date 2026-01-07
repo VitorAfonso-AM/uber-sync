@@ -148,12 +148,15 @@ async function sendToGoogleSheets(trips: Trip[]) {
     OUTPUT_COLUMNS.map((c) => t[c] || '')
   );
 
-  const res = await fetch(SHEETS_API_URL, {
+  const res = await fetch(`${SHEETS_API_URL}?tab=uber`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ values }),
+    body: JSON.stringify({
+      tab: 'uber',
+      values,
+    }),
   });
-
+  
   if (!res.ok) {
     throw new Error(
       `Sheets API error: ${res.status} ${res.statusText}`

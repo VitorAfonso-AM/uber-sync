@@ -4,13 +4,14 @@ if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
   throw new Error('FIREBASE_SERVICE_ACCOUNT não definido');
 }
 
-const serviceAccount = JSON.parse(
-  process.env.FIREBASE_SERVICE_ACCOUNT
-);
+const raw = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+
+// 🔥 CONVERSÃO CRÍTICA
+raw.private_key = raw.private_key.replace(/\\n/g, '\n');
 
 if (!admin.apps.length) {
   admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
+    credential: admin.credential.cert(raw),
   });
 }
 

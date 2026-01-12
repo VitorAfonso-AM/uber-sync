@@ -2,6 +2,8 @@ import 'dotenv/config';
 import SftpClient from 'ssh2-sftp-client';
 import { parse } from 'csv-parse/sync';
 import cron from 'node-cron';
+import { initializeApp, cert } from 'firebase-admin/app';
+import { getFirestore } from 'firebase-admin/firestore';
 
 // ================= TIPOS =================
 
@@ -32,7 +34,17 @@ const SFTP_CONFIG = {
   remotePath: '/from_uber/trips',
 };
 
-const SHEETS_API_URL = 'https://sheetsapi-4glvqxtnkq-uc.a.run.app';
+// Inicializar Firebase
+const serviceAccount = JSON.parse(
+  process.env.FIREBASE_SERVICE_ACCOUNT || '{}'
+);
+
+initializeApp({
+  credential: cert(serviceAccount),
+});
+
+const db = getFirestore();
+const COLLECTION_NAME = 'uber_trips';
 
 // Colunas originais necessárias para leitura
 const SOURCE_COLUMNS = [
@@ -42,24 +54,6 @@ const SOURCE_COLUMNS = [
   'Hora de chegada (local)',
   'Nome',
   'Sobrenome',
-  'Grupo',
-  'Serviço',
-  'Cidade',
-  'País',
-  'Distância (mi)',
-  'Duração (min)',
-  'Endereço de partida',
-  'Endereço de destino',
-  'Valor total: BRL',
-];
-
-// Colunas finais para envio ao Sheets
-const OUTPUT_COLUMNS = [
-  'ID da viagem/Uber Eats',
-  'Data da solicitação (local)',
-  'Hora da solicitação (local)',
-  'Hora de chegada (local)',
-  'Nome Completo',
   'Grupo',
   'Serviço',
   'Cidade',
@@ -141,27 +135,55 @@ async function processCSVFile(
   }) as Trip[];
 }
 
-async function sendToGoogleSheets(trips: Trip[]) {
+async function sendToFirestore(trips: Trip[]) {
   if (!trips.length) return;
 
-  const values = trips.map((t) =>
-    OUTPUT_COLUMNS.map((c) => t[c] || '')
-  );
+  const batch = db.batch();
+  let batchCount = 0;
+  const batches = [];
 
-  const res = await fetch(`${SHEETS_API_URL}?tab=uber`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      tab: 'uber',
-      values,
-    }),
-  });
-  
-  if (!res.ok) {
-    throw new Error(
-      `Sheets API error: ${res.status} ${res.statusText}`
-    );
+  for (const trip of trips) {
+    const tripId = trip['ID da viagem/Uber Eats'];
+    
+    if (!tripId) continue;
+
+    const docRef = db.collection(COLLECTION_NAME).doc(tripId);
+    
+    batch.set(docRef, {
+      tripId: trip['ID da viagem/Uber Eats'],
+      requestDate: trip['Data da solicitação (local)'],
+      requestTime: trip['Hora da solicitação (local)'],
+      arrivalTime: trip['Hora de chegada (local)'],
+      fullName: trip['Nome Completo'],
+      group: trip['Grupo'],
+      service: trip['Serviço'],
+      city: trip['Cidade'],
+      country: trip['País'],
+      distance: trip['Distância (mi)'],
+      duration: trip['Duração (min)'],
+      startAddress: trip['Endereço de partida'],
+      endAddress: trip['Endereço de destino'],
+      totalValue: trip['Valor total: BRL'],
+      createdAt: new Date(),
+      syncedAt: new Date(),
+    });
+
+    batchCount++;
+
+    // Firestore batch tem limite de 500 operações
+    if (batchCount === 500) {
+      batches.push(batch.commit());
+      batchCount = 0;
+    }
   }
+
+  // Commit do último batch se houver operações pendentes
+  if (batchCount > 0) {
+    batches.push(batch.commit());
+  }
+
+  await Promise.all(batches);
+  console.log(`📝 ${trips.length} viagens salvas no Firestore`);
 }
 
 // ================= SYNC FUNCTION =================
@@ -192,7 +214,7 @@ async function syncUberTrips() {
     const filtered = filterTrips(trips);
 
     console.log(`[${timestamp}] 📊 ${filtered.length} viagens encontradas (após filtros)`);
-    await sendToGoogleSheets(filtered);
+    await sendToFirestore(filtered);
 
     console.log(`[${timestamp}] ✅ Sync concluído com sucesso`);
   } catch (error) {
@@ -207,6 +229,7 @@ async function syncUberTrips() {
 
 async function main() {
   console.log('🔧 Uber Sync Service iniciado');
+  console.log(`📦 Collection: ${COLLECTION_NAME}`);
   console.log(`⏰ Agendamento: ${CRON_SCHEDULE}`);
   console.log(`🌍 Timezone: ${process.env.TZ || 'UTC'}`);
   console.log(`🚫 Grupos excluídos: ${EXCLUDED_GROUPS.join(', ')}`);
@@ -214,6 +237,11 @@ async function main() {
   // Validar configuração
   if (!SFTP_CONFIG.username || !SFTP_CONFIG.privateKey) {
     console.error('❌ UBER_SFTP_USERNAME e UBER_SFTP_PRIVATE_KEY são obrigatórios');
+    process.exit(1);
+  }
+
+  if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+    console.error('❌ FIREBASE_SERVICE_ACCOUNT é obrigatório');
     process.exit(1);
   }
 

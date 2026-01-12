@@ -2,8 +2,7 @@ import 'dotenv/config';
 import SftpClient from 'ssh2-sftp-client';
 import { parse } from 'csv-parse/sync';
 import cron from 'node-cron';
-import { initializeApp, cert } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
+import { db } from './firebase';
 
 // ================= TIPOS =================
 
@@ -34,41 +33,10 @@ const SFTP_CONFIG = {
   remotePath: '/from_uber/trips',
 };
 
-// Inicializar Firebase
-const serviceAccount = JSON.parse(
-  process.env.FIREBASE_SERVICE_ACCOUNT || '{}'
-);
+const FIRESTORE_COLLECTION = 'uber_trips';
 
-initializeApp({
-  credential: cert(serviceAccount),
-});
-
-const db = getFirestore();
-const COLLECTION_NAME = 'uber_trips';
-
-// Colunas originais necessárias para leitura
-const SOURCE_COLUMNS = [
-  'ID da viagem/Uber Eats',
-  'Data da solicitação (local)',
-  'Hora da solicitação (local)',
-  'Hora de chegada (local)',
-  'Nome',
-  'Sobrenome',
-  'Grupo',
-  'Serviço',
-  'Cidade',
-  'País',
-  'Distância (mi)',
-  'Duração (min)',
-  'Endereço de partida',
-  'Endereço de destino',
-  'Valor total: BRL',
-];
-
-// Horário do cron (padrão: 8h da manhã, horário de Brasília)
 const CRON_SCHEDULE = process.env.CRON_SCHEDULE || '0 8 * * *';
 
-// Grupos a serem excluídos
 const EXCLUDED_GROUPS = ['ADMINISTRATIVO', 'COMERCIAL'];
 
 // ================= FUNÇÕES =================
@@ -135,58 +103,47 @@ async function processCSVFile(
   }) as Trip[];
 }
 
-async function sendToFirestore(trips: Trip[]) {
+// ================= FIRESTORE =================
+
+async function saveTripsToFirestore(trips: Trip[]) {
   if (!trips.length) return;
 
   const batch = db.batch();
-  let batchCount = 0;
-  const batches = [];
 
   for (const trip of trips) {
     const tripId = trip['ID da viagem/Uber Eats'];
-    
     if (!tripId) continue;
 
-    const docRef = db.collection(COLLECTION_NAME).doc(tripId);
-    
-    batch.set(docRef, {
-      tripId: trip['ID da viagem/Uber Eats'],
-      requestDate: trip['Data da solicitação (local)'],
-      requestTime: trip['Hora da solicitação (local)'],
-      arrivalTime: trip['Hora de chegada (local)'],
-      fullName: trip['Nome Completo'],
-      group: trip['Grupo'],
-      service: trip['Serviço'],
-      city: trip['Cidade'],
-      country: trip['País'],
-      distance: trip['Distância (mi)'],
-      duration: trip['Duração (min)'],
-      startAddress: trip['Endereço de partida'],
-      endAddress: trip['Endereço de destino'],
-      totalValue: trip['Valor total: BRL'],
-      createdAt: new Date(),
-      syncedAt: new Date(),
-    });
+    const ref = db.collection(FIRESTORE_COLLECTION).doc(tripId);
 
-    batchCount++;
-
-    // Firestore batch tem limite de 500 operações
-    if (batchCount === 500) {
-      batches.push(batch.commit());
-      batchCount = 0;
-    }
+    batch.set(
+      ref,
+      {
+        tripId,
+        requestDate: trip['Data da solicitação (local)'],
+        requestTime: trip['Hora da solicitação (local)'],
+        arrivalTime: trip['Hora de chegada (local)'],
+        fullName: trip['Nome Completo'],
+        group: trip['Grupo'],
+        service: trip['Serviço'],
+        city: trip['Cidade'],
+        country: trip['País'],
+        distanceMi: Number(trip['Distância (mi)']) || 0,
+        durationMin: Number(trip['Duração (min)']) || 0,
+        originAddress: trip['Endereço de partida'],
+        destinationAddress: trip['Endereço de destino'],
+        totalValueBRL:
+          Number(trip['Valor total: BRL']?.replace(',', '.')) || 0,
+        createdAt: new Date(),
+      },
+      { merge: true }
+    );
   }
 
-  // Commit do último batch se houver operações pendentes
-  if (batchCount > 0) {
-    batches.push(batch.commit());
-  }
-
-  await Promise.all(batches);
-  console.log(`📝 ${trips.length} viagens salvas no Firestore`);
+  await batch.commit();
 }
 
-// ================= SYNC FUNCTION =================
+// ================= SYNC =================
 
 async function syncUberTrips() {
   const timestamp = new Date().toISOString();
@@ -205,20 +162,26 @@ async function syncUberTrips() {
     const file = files.find((f) => f.name === target);
 
     if (!file) {
-      console.log(`[${timestamp}] ⚠️  Arquivo ${target} não encontrado`);
+      console.log(`[${timestamp}] ⚠️ Arquivo ${target} não encontrado`);
       return;
     }
 
     console.log(`[${timestamp}] 📥 Processando arquivo: ${file.name}`);
+
     const trips = await processCSVFile(sftp, file.name);
     const filtered = filterTrips(trips);
 
-    console.log(`[${timestamp}] 📊 ${filtered.length} viagens encontradas (após filtros)`);
-    await sendToFirestore(filtered);
+    console.log(
+      `[${timestamp}] 📊 ${filtered.length} viagens após filtros`
+    );
 
-    console.log(`[${timestamp}] ✅ Sync concluído com sucesso`);
+    await saveTripsToFirestore(filtered);
+
+    console.log(
+      `[${timestamp}] ✅ Viagens salvas no Firestore`
+    );
   } catch (error) {
-    console.error(`[${timestamp}] 💥 Erro durante sync:`, error);
+    console.error(`[${timestamp}] 💥 Erro no sync:`, error);
     throw error;
   } finally {
     await sftp.end();
@@ -229,58 +192,36 @@ async function syncUberTrips() {
 
 async function main() {
   console.log('🔧 Uber Sync Service iniciado');
-  console.log(`📦 Collection: ${COLLECTION_NAME}`);
-  console.log(`⏰ Agendamento: ${CRON_SCHEDULE}`);
-  console.log(`🌍 Timezone: ${process.env.TZ || 'UTC'}`);
+  console.log(`⏰ Cron: ${CRON_SCHEDULE}`);
   console.log(`🚫 Grupos excluídos: ${EXCLUDED_GROUPS.join(', ')}`);
 
-  // Validar configuração
   if (!SFTP_CONFIG.username || !SFTP_CONFIG.privateKey) {
-    console.error('❌ UBER_SFTP_USERNAME e UBER_SFTP_PRIVATE_KEY são obrigatórios');
+    console.error('❌ Credenciais SFTP ausentes');
     process.exit(1);
   }
 
-  if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
-    console.error('❌ FIREBASE_SERVICE_ACCOUNT é obrigatório');
-    process.exit(1);
-  }
-
-  // Executar imediatamente ao iniciar (opcional)
   if (process.env.RUN_ON_START === 'true') {
-    console.log('🏃 Executando sync inicial...');
-    try {
-      await syncUberTrips();
-    } catch (error) {
-      console.error('❌ Erro no sync inicial:', error);
-    }
+    await syncUberTrips();
   }
 
-  // Configurar cron job
-  cron.schedule(CRON_SCHEDULE, async () => {
-    try {
-      await syncUberTrips();
-    } catch (error) {
-      console.error('❌ Erro no cron job:', error);
+  cron.schedule(
+    CRON_SCHEDULE,
+    async () => {
+      try {
+        await syncUberTrips();
+      } catch (err) {
+        console.error('❌ Erro no cron:', err);
+      }
+    },
+    {
+      timezone: process.env.TZ || 'America/Sao_Paulo',
     }
-  }, {
-    timezone: process.env.TZ || 'America/Sao_Paulo'
-  });
+  );
 
-  console.log('✅ Cron job configurado. Aguardando próxima execução...');
-
-  // Manter o processo rodando
-  process.on('SIGTERM', () => {
-    console.log('👋 Recebido SIGTERM, encerrando...');
-    process.exit(0);
-  });
-
-  process.on('SIGINT', () => {
-    console.log('👋 Recebido SIGINT, encerrando...');
-    process.exit(0);
-  });
+  console.log('✅ Cron ativo. Aguardando execuções...');
 }
 
 main().catch((err) => {
   console.error('💥 Erro fatal:', err);
   process.exit(1);
-});
+}); 

@@ -35,19 +35,22 @@ const SFTP_CONFIG = {
 
 const FIRESTORE_COLLECTION = 'uber_trips';
 
-const CRON_SCHEDULE = process.env.CRON_SCHEDULE || '0 8 * * *';
+const CRON_SCHEDULE = process.env.CRON_SCHEDULE || '0 5,8,17,20 * * *';
 
 const EXCLUDED_GROUPS = ['ADMINISTRATIVO', 'COMERCIAL'];
 
 // ================= FUNÇÕES =================
 
-function getYesterdayFileName(): string {
-  const d = new Date();
-  d.setDate(d.getDate() - 1);
+function getMostRecentCSVFile(files: SftpFile[]): SftpFile | null {
+  const csvFiles = files
+    .filter((f) => f.type === '-' && f.name.endsWith('.csv'))
+    .filter((f) => f.name.startsWith('daily_trips-'));
 
-  return `daily_trips-${d.getFullYear()}_${String(
-    d.getMonth() + 1
-  ).padStart(2, '0')}_${String(d.getDate()).padStart(2, '0')}.csv`;
+  if (csvFiles.length === 0) return null;
+
+  return csvFiles.reduce((latest, current) => {
+    return current.modifyTime > latest.modifyTime ? current : latest;
+  });
 }
 
 function filterTrips(trips: Trip[]): Trip[] {
@@ -158,17 +161,21 @@ async function syncUberTrips() {
       SFTP_CONFIG.remotePath
     )) as SftpFile[];
 
-    const target = getYesterdayFileName();
-    const file = files.find((f) => f.name === target);
+    const latestFile = getMostRecentCSVFile(files);
 
-    if (!file) {
-      console.log(`[${timestamp}] ⚠️ Arquivo ${target} não encontrado`);
+    if (!latestFile) {
+      console.log(`[${timestamp}] ⚠️ Nenhum arquivo CSV encontrado`);
       return;
     }
 
-    console.log(`[${timestamp}] 📥 Processando arquivo: ${file.name}`);
+    const fileDate = new Date(latestFile.modifyTime * 1000).toLocaleString('pt-BR', {
+      timeZone: 'America/Sao_Paulo',
+    });
 
-    const trips = await processCSVFile(sftp, file.name);
+    console.log(`[${timestamp}] 📥 Processando arquivo mais recente: ${latestFile.name}`);
+    console.log(`[${timestamp}] 📅 Data de modificação: ${fileDate}`);
+
+    const trips = await processCSVFile(sftp, latestFile.name);
     const filtered = filterTrips(trips);
 
     console.log(
@@ -224,4 +231,4 @@ async function main() {
 main().catch((err) => {
   console.error('💥 Erro fatal:', err);
   process.exit(1);
-}); 
+});

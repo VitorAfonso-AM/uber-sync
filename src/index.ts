@@ -109,13 +109,27 @@ async function processCSVFile(
 // ================= FIRESTORE =================
 
 async function saveTripsToFirestore(trips: Trip[]) {
-  if (!trips.length) return;
+  console.log(`📝 Iniciando escrita no Firestore. Total de viagens recebidas: ${trips.length}`);
+
+  if (!trips.length) {
+    console.log('🛈 Nenhuma viagem para salvar no Firestore (lista vazia).');
+    return;
+  }
 
   const batch = db.batch();
+  let tripsWithId = 0;
 
   for (const trip of trips) {
     const tripId = trip['ID da viagem/Uber Eats'];
-    if (!tripId) continue;
+    if (!tripId) {
+      console.warn(
+        '⚠️ Viagem ignorada por não possuir "ID da viagem/Uber Eats":',
+        JSON.stringify(trip)
+      );
+      continue;
+    }
+
+    tripsWithId++;
 
     const ref = db.collection(FIRESTORE_COLLECTION).doc(tripId);
 
@@ -143,7 +157,17 @@ async function saveTripsToFirestore(trips: Trip[]) {
     );
   }
 
-  await batch.commit();
+  console.log(
+    `📦 Finalizando batch Firestore. Viagens com ID válidos a serem salvos: ${tripsWithId}`
+  );
+
+  try {
+    await batch.commit();
+    console.log('✅ Batch commit do Firestore concluído com sucesso.');
+  } catch (err) {
+    console.error('❌ Erro ao executar batch.commit() do Firestore:', err);
+    throw err;
+  }
 }
 
 // ================= SYNC =================
